@@ -46,9 +46,11 @@ threading.Thread(target=run_api, daemon=True).start()
 def main():
     st.title("Simple API with Streamlit and FastAPI")
     path = Path("logs.txt")
+    if not path.exists():
+        path.write_text("0")
     count = int(path.read_text())
     count = str(count + 1)
-    st.write(f"count is {count}")
+    st.write(f"Count is {count}")
     path.write_text(count)
     st.write("FastAPI is running in the background. You can access the API endpoints at:")
     st.write(" - [Get all items](http://localhost:8000/items)")
