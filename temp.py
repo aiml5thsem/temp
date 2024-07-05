@@ -6,7 +6,6 @@ import threading
 import uvicorn
 from fastapi.responses import JSONResponse
 from pathlib import Path
-from pyngrok import ngrok
 
 # Initialize FastAPI app
 api = FastAPI()
@@ -43,10 +42,6 @@ def run_api():
 # Start the FastAPI app in a background thread
 threading.Thread(target=run_api, daemon=True).start()
 
-# Create a public URL for the FastAPI app using ngrok
-public_url = ngrok.connect(8000)
-api_url = public_url.public_url
-
 # Streamlit app
 def main():
     st.title("Simple API with Streamlit and FastAPI")
@@ -58,8 +53,8 @@ def main():
     st.write(f"Count is {count}")
     path.write_text(count)
     st.write("FastAPI is running in the background. You can access the API endpoints at:")
-    st.write(f" - [Get all items]({api_url}/items)")
-    st.write(f" - [Get a specific item by ID]({api_url}/items/1)")
+    st.write(" - [Get all items](http://localhost:8000/items)")
+    st.write(" - [Get a specific item by ID](http://localhost:8000/items/1)")
 
 if __name__ == '__main__':
     main()
