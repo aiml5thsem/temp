@@ -1,4 +1,4 @@
-#2nd
+#3rd
 # Part 1: Imports and Initial Setup
 
 import pandas as pd
@@ -763,9 +763,9 @@ class TurbofanAnalysis:
         exclude_cols = ['unit', 'cycle', 'RUL']
         return [col for col in df.columns if col not in exclude_cols]
 
-    def _prepare_model_sequences(self, df, features, sequence_length):
+    def _prepare_model_sequences(self, df, feature_cols, sequence_length):
         """
-        Prepare sequences for model training with advanced windowing
+        Prepare sequences for model training
         """
         sequences = []
         targets = []
@@ -775,7 +775,7 @@ class TurbofanAnalysis:
 
             # Create sequences
             for i in range(len(unit_data) - sequence_length + 1):
-                sequences.append(unit_data[features].iloc[i:i+sequence_length].values)
+                sequences.append(unit_data[feature_cols].iloc[i:i+sequence_length].values)
                 targets.append(unit_data['RUL'].iloc[i+sequence_length-1])
 
         return np.array(sequences), np.array(targets)
@@ -963,6 +963,194 @@ class TurbofanAnalysis:
             print(f"Error processing dataset {dataset_id}: {str(e)}")
             return False
 
+    def combine_datasets(self):
+        """
+        Combine all datasets for unified model training
+        """
+        combined_train = []
+        combined_test = []
+
+        for dataset_id in ['FD001', 'FD002', 'FD003', 'FD004']:
+            # Load data if not already loaded
+            if dataset_id not in self.datasets:
+                self.load_data(dataset_id)
+
+            # Process training data
+            train_df = self.datasets[dataset_id]['train'].copy()
+            test_df = self.datasets[dataset_id]['test'].copy()
+            rul_df = self.datasets[dataset_id]['rul'].copy()
+
+            # Calculate RUL for training data
+            max_cycles = train_df.groupby('unit')['cycle'].max().reset_index()
+            max_cycles.columns = ['unit', 'max_cycle']
+            train_df = train_df.merge(max_cycles, on=['unit'], how='left')
+            train_df['RUL'] = train_df['max_cycle'] - train_df['cycle']
+
+            # Process test data
+            # Add max cycle information to test data
+            test_max_cycles = test_df.groupby('unit')['cycle'].max().reset_index()
+            test_max_cycles.columns = ['unit', 'max_cycle']
+            test_df = test_df.merge(test_max_cycles, on=['unit'], how='left')
+
+            # Add true RUL values to test data
+            test_rul = pd.DataFrame()
+            test_rul['unit'] = range(1, len(rul_df) + 1)
+            test_rul['RUL_true'] = rul_df['RUL'].values
+            test_df = test_df.merge(test_rul, on=['unit'], how='left')
+            test_df['RUL'] = test_df['RUL_true'] + (test_df['max_cycle'] - test_df['cycle'])
+
+            # Add dataset identifier
+            train_df['dataset'] = dataset_id
+            test_df['dataset'] = dataset_id
+
+            # Clean up unnecessary columns
+            train_df.drop('max_cycle', axis=1, inplace=True)
+            test_df.drop(['max_cycle', 'RUL_true'], axis=1, inplace=True)
+
+            combined_train.append(train_df)
+            combined_test.append(test_df)
+
+        # Combine all datasets
+        self.combined_data = {
+            'train': pd.concat(combined_train, ignore_index=True),
+            'test': pd.concat(combined_test, ignore_index=True)
+        }
+
+        print("Combined Dataset Shapes:")
+        print(f"Training data: {self.combined_data['train'].shape}")
+        print(f"Test data: {self.combined_data['test'].shape}")
+
+        return self.combined_data
+
+    def train_unified_model(self):
+        """
+        Train a single model on combined dataset
+        """
+        if not hasattr(self, 'combined_data'):
+            self.combine_datasets()
+
+        print("\nPreparing data for unified model...")
+
+        # Get the data
+        train_df = self.combined_data['train'].copy()
+        test_df = self.combined_data['test'].copy()
+
+        # Define feature columns
+        feature_cols = self.sensor_cols + self.setting_cols
+
+        # Normalize features
+        scaler = StandardScaler()
+        train_df[feature_cols] = scaler.fit_transform(train_df[feature_cols])
+        test_df[feature_cols] = scaler.transform(test_df[feature_cols])
+
+        print("\nPreparing sequences...")
+
+        # Prepare sequences
+        sequence_length = 50
+        X_train, y_train = self._prepare_model_sequences(train_df, feature_cols, sequence_length)
+        X_test, y_test = self._prepare_model_sequences(test_df, feature_cols, sequence_length)
+
+        print(f"\nSequence shapes:")
+        print(f"X_train: {X_train.shape}")
+        print(f"X_test: {X_test.shape}")
+
+        print("\nBuilding and training model...")
+
+        # Build and train model
+        model = self._build_advanced_lstm(len(feature_cols), sequence_length)
+
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True
+        )
+
+        history = model.fit(
+            X_train, y_train,
+            epochs=50,
+            batch_size=32,
+            validation_split=0.2,
+            callbacks=[early_stopping],
+            verbose=1
+        )
+
+        print("\nEvaluating model...")
+
+        # Evaluate model
+        train_pred = model.predict(X_train)
+        test_pred = model.predict(X_test)
+
+        # Calculate metrics
+        train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
+        test_rmse = np.sqrt(mean_squared_error(y_test, test_pred))
+        train_r2 = r2_score(y_train, train_pred)
+        test_r2 = r2_score(y_test, test_pred)
+
+        print("\nUnified Model Performance:")
+        print(f"Training RMSE: {train_rmse:.2f}")
+        print(f"Test RMSE: {test_rmse:.2f}")
+        print(f"Training R2 Score: {train_r2:.2f}")
+        print(f"Test R2 Score: {test_r2:.2f}")
+
+        # Visualize results
+        self._plot_unified_model_results(y_train, train_pred, y_test, test_pred)
+
+        # Store the results
+        self.unified_model_results = {
+            'model': model,
+            'history': history,
+            'metrics': {
+                'train_rmse': train_rmse,
+                'test_rmse': test_rmse,
+                'train_r2': train_r2,
+                'test_r2': test_r2
+            }
+        }
+
+        return model, history, self.unified_model_results['metrics']
+
+    def _plot_unified_model_results(self, y_train, train_pred, y_test, test_pred):
+        """
+        Plot unified model results
+        """
+        fig = make_subplots(rows=1, cols=2,
+                           subplot_titles=('Training Predictions', 'Test Predictions'))
+
+        # Training predictions
+        fig.add_trace(
+            go.Scatter(x=y_train, y=train_pred.flatten(),
+                      mode='markers',
+                      name='Training'),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=[y_train.min(), y_train.max()],
+                      y=[y_train.min(), y_train.max()],
+                      mode='lines',
+                      name='Perfect Prediction',
+                      line=dict(color='red', dash='dash')),
+            row=1, col=1
+        )
+
+        # Test predictions
+        fig.add_trace(
+            go.Scatter(x=y_test, y=test_pred.flatten(),
+                      mode='markers',
+                      name='Test'),
+            row=1, col=2
+        )
+        fig.add_trace(
+            go.Scatter(x=[y_test.min(), y_test.max()],
+                      y=[y_test.min(), y_test.max()],
+                      mode='lines',
+                      name='Perfect Prediction',
+                      line=dict(color='red', dash='dash')),
+            row=1, col=2
+        )
+
+        fig.update_layout(height=500, width=1000,
+                         title_text="Unified Model Prediction Analysis")
+        fig.show()
 
     # Part 5: Main Execution Flow and Utility Functions
     def run_complete_analysis(self, datasets=['FD001', 'FD002', 'FD003', 'FD004']):
@@ -1206,15 +1394,14 @@ class TurbofanAnalysis:
 
 # Main execution
 if __name__ == "__main__":
-    # Initialize analyzer
     analyzer = TurbofanAnalysis()
 
-    # Run complete analysis for all datasets
-    results = analyzer.run_complete_analysis()
+    print("Starting Turbofan Engine Analysis...")
 
-    # Generate reports for each dataset
-    for dataset_id in ['FD001', 'FD002', 'FD003', 'FD004']:
-        analyzer.generate_report(dataset_id)
+    # Train unified model
+    print("\nTraining unified model on combined datasets...")
+    model, history, metrics = analyzer.train_unified_model()
 
-    # Compare results across datasets
-    analyzer.evaluate_all_datasets()
+    print("\nFinal Model Performance Metrics:")
+    print(f"Test RMSE: {metrics['test_rmse']:.2f}")
+    print(f"Test R2 Score: {metrics['test_r2']:.2f}")
